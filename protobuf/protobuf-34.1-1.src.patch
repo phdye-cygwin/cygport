@@ -1,0 +1,420 @@
+diff --git a/src/README.md b/src/README.md
+index 39e8440fc..0bec35f13 100644
+--- a/src/README.md
++++ b/src/README.md
+@@ -107,7 +107,20 @@ See https://github.com/Microsoft/vcpkg for more information.
+ 
+ To build from source using Microsoft Visual C++, see [cmake/README.md](../cmake/README.md).
+ 
+-To build from source using Cygwin or MinGW, follow the Unix installation
++To build from source using Cygwin, use CMake with fetched dependencies
++(the system Abseil package is not compatible):
++
++    $ mkdir build && cd build
++    $ cmake .. -DCMAKE_CXX_STANDARD=17 \
++          -Dprotobuf_FORCE_FETCH_DEPENDENCIES=ON \
++          -DCMAKE_CXX_FLAGS="-D_GLIBCXX_USE_CXX11_ABI=1"
++    $ cmake --build . --parallel $(nproc)
++
++Note: upstream Abseil does not support Cygwin. The fetched Abseil source
++requires patches for `policy_checks.h`, `sysinfo.cc`, `config.h`, and
++`attributes.h`. See the project's Cygwin build documentation for details.
++
++To build from source using MinGW, follow the Unix installation
+ instructions, above.
+ 
+ Binary Compatibility Warning
+diff --git a/src/google/protobuf/BUILD.bazel b/src/google/protobuf/BUILD.bazel
+index cfc776226..ce0a28310 100644
+--- a/src/google/protobuf/BUILD.bazel
++++ b/src/google/protobuf/BUILD.bazel
+@@ -459,6 +459,7 @@ cc_test(
+     srcs = ["port_test.cc"],
+     deps = [
+         ":port",
++        ":protobuf_lite",
+         ":varint_shuffle",
+         "@abseil-cpp//absl/base:config",
+         "@abseil-cpp//absl/log:absl_check",
+diff --git a/src/google/protobuf/compiler/code_generator_unittest.cc b/src/google/protobuf/compiler/code_generator_unittest.cc
+index 9fe75f7c8..00016a857 100644
+--- a/src/google/protobuf/compiler/code_generator_unittest.cc
++++ b/src/google/protobuf/compiler/code_generator_unittest.cc
+@@ -19,6 +19,7 @@
+ #include "absl/strings/str_format.h"
+ #include "absl/strings/string_view.h"
+ #include "google/protobuf/compiler/parser.h"
++#include "google/protobuf/compiler/plugin.pb.h"
+ #include "editions/edition_defaults_test_utils.h"
+ #include "google/protobuf/io/tokenizer.h"
+ #include "google/protobuf/io/zero_copy_stream_impl_lite.h"
+@@ -546,6 +547,43 @@ TEST_F(CodeGeneratorTest, SupportedEditionRangeIsDense) {
+   }
+ }
+ 
++// Verify that a serialized CodeGeneratorRequest contains LF bytes (0x0a)
++// that would be corrupted by text-mode I/O. This is the exact failure mode
++// on platforms where stdin/stdout default to text mode (Cygwin, Windows):
++// the protoc plugin protocol sends binary protobuf over pipes, and text
++// mode silently inserts CR before every LF.
++TEST(PluginProtocolTest, PluginRequestWireDataContainsLF) {
++  CodeGeneratorRequest request;
++  request.add_file_to_generate("test.proto");
++  request.set_parameter("option=value");
++  auto* fd = request.add_proto_file();
++  fd->set_name("test.proto");
++  fd->set_package("test");
++
++  std::string wire;
++  ASSERT_TRUE(request.SerializeToString(&wire));
++
++  // 0x0a is the wire format for field 1 (length-delimited string).
++  // Any CodeGeneratorRequest with file_to_generate set will contain this.
++  bool has_lf = false;
++  for (char c : wire) {
++    if (c == '\n') {
++      has_lf = true;
++      break;
++    }
++  }
++  EXPECT_TRUE(has_lf)
++      << "Serialized CodeGeneratorRequest should contain 0x0a (LF) bytes; "
++         "text-mode I/O would corrupt these with CR insertion";
++
++  // Round-trip must preserve all bytes exactly.
++  CodeGeneratorRequest parsed;
++  ASSERT_TRUE(parsed.ParseFromString(wire));
++  EXPECT_EQ(parsed.file_to_generate(0), "test.proto");
++  EXPECT_EQ(parsed.parameter(), "option=value");
++  EXPECT_EQ(parsed.proto_file(0).name(), "test.proto");
++}
++
+ #include "google/protobuf/port_undef.inc"
+ 
+ }  // namespace
+diff --git a/src/google/protobuf/compiler/command_line_interface_tester.cc b/src/google/protobuf/compiler/command_line_interface_tester.cc
+index ec1ed581a..136d2a134 100644
+--- a/src/google/protobuf/compiler/command_line_interface_tester.cc
++++ b/src/google/protobuf/compiler/command_line_interface_tester.cc
+@@ -70,20 +70,13 @@ void CommandLineInterfaceTester::RunProtocWithArgs(
+     argv[i] = args[i].c_str();
+   }
+ 
+-  // TODO: Cygwin doesn't work well if we try to capture stderr and
+-  // stdout at the same time. Need to figure out why and add this capture back
+-  // for Cygwin.
+-#if !defined(__CYGWIN__)
+   CaptureTestStdout();
+-#endif
+   CaptureTestStderr();
+ 
+   return_code_ = cli_.Run(static_cast<int>(args.size()), argv.data());
+ 
+   captured_stderr_ = GetCapturedTestStderr();
+-#if !defined(__CYGWIN__)
+   captured_stdout_ = GetCapturedTestStdout();
+-#endif
+ }
+ 
+ void CommandLineInterfaceTester::RunProtocAndExpectDeath(
+diff --git a/src/google/protobuf/compiler/command_line_interface_unittest.cc b/src/google/protobuf/compiler/command_line_interface_unittest.cc
+index acf1f46e5..5a2d389cc 100644
+--- a/src/google/protobuf/compiler/command_line_interface_unittest.cc
++++ b/src/google/protobuf/compiler/command_line_interface_unittest.cc
+@@ -4614,10 +4614,6 @@ TEST_F(CommandLineInterfaceTest, PrintFreeFieldNumbers) {
+ 
+   ExpectNoErrors();
+ 
+-  // TODO: Cygwin doesn't work well if we try to capture stderr and
+-  // stdout at the same time. Need to figure out why and add this test back
+-  // for Cygwin.
+-#if !defined(__CYGWIN__)
+   ExpectCapturedStdout(
+       "foo.Foo                             free: 1 3 6-7 9 11-INF\n"
+       "Bar                                 free: 1 3 6-7 9 11-INF\n"
+@@ -4628,7 +4624,6 @@ TEST_F(CommandLineInterfaceTest, PrintFreeFieldNumbers) {
+       "Quz.E.G                             free: 1-INF\n"
+       "Quz.E                               free: 1-8 10-14 16-INF\n"
+       "Quz                                 free: 1 3 5-7 12-INF\n");
+-#endif
+ }
+ 
+ TEST_F(CommandLineInterfaceTest, TargetTypeEnforcement) {
+diff --git a/src/google/protobuf/compiler/plugin.cc b/src/google/protobuf/compiler/plugin.cc
+index 9949a352b..f266eaf4f 100644
+--- a/src/google/protobuf/compiler/plugin.cc
++++ b/src/google/protobuf/compiler/plugin.cc
+@@ -14,9 +14,10 @@
+ #include <utility>
+ #include <vector>
+ 
+-#ifdef _WIN32
++#if defined(_WIN32) || defined(__CYGWIN__)
+ #include <fcntl.h>
+-#else
++#endif
++#ifndef _WIN32
+ #include <unistd.h>
+ #endif
+ 
+@@ -42,6 +43,8 @@ namespace compiler {
+ // DO NOT include <io.h>, instead create functions in io_win32.{h,cc} and import
+ // them like we do below.
+ using google::protobuf::io::win32::setmode;
++#elif defined(__CYGWIN__)
++#include <io.h>
+ #endif
+ 
+ class GeneratorResponseContext : public GeneratorContext {
+@@ -165,9 +168,12 @@ int PluginMain(int argc, char* argv[], const CodeGenerator* generator) {
+     return 1;
+   }
+ 
+-#ifdef _WIN32
++#if defined(_WIN32)
+   setmode(STDIN_FILENO, _O_BINARY);
+   setmode(STDOUT_FILENO, _O_BINARY);
++#elif defined(__CYGWIN__)
++  setmode(STDIN_FILENO, O_BINARY);
++  setmode(STDOUT_FILENO, O_BINARY);
+ #endif
+ 
+   CodeGeneratorRequest request;
+diff --git a/src/google/protobuf/descriptor_unittest.cc b/src/google/protobuf/descriptor_unittest.cc
+index d55c99765..8194376aa 100644
+--- a/src/google/protobuf/descriptor_unittest.cc
++++ b/src/google/protobuf/descriptor_unittest.cc
+@@ -15696,6 +15696,39 @@ TEST(DescriptorTableExternLinkageTest, DescriptorTableExternLinkageTest) {
+ }
+ 
+ 
++// Verify that distinct generated message types return distinct Descriptor
++// pointers through virtual dispatch. On PE/COFF platforms (Cygwin, MinGW),
++// weak symbol misuse can collapse virtual function overrides, causing all
++// types to share one Descriptor. This catches that class of linker bug.
++TEST(DescriptorMiscTest, DistinctTypesHaveDistinctDescriptors) {
++  FileDescriptorProto fdp;
++  DescriptorProto dp;
++  FieldDescriptorProto field_dp;
++  EnumDescriptorProto edp;
++  SourceCodeInfo sci;
++  ServiceDescriptorProto sdp;
++  MethodDescriptorProto mdp;
++  OneofDescriptorProto odp;
++
++  const Descriptor* descs[] = {
++      fdp.GetDescriptor(),     dp.GetDescriptor(),
++      field_dp.GetDescriptor(), edp.GetDescriptor(),
++      sci.GetDescriptor(),     sdp.GetDescriptor(),
++      mdp.GetDescriptor(),     odp.GetDescriptor(),
++  };
++
++  // Every pair must be distinct.
++  for (int i = 0; i < 8; ++i) {
++    ASSERT_NE(descs[i], nullptr) << "Null descriptor at index " << i;
++    for (int j = i + 1; j < 8; ++j) {
++      EXPECT_NE(descs[i], descs[j])
++          << "Descriptor collision: " << descs[i]->full_name()
++          << " and " << descs[j]->full_name()
++          << " share the same Descriptor pointer";
++    }
++  }
++}
++
+ }  // namespace descriptor_unittest
+ }  // namespace protobuf
+ }  // namespace google
+diff --git a/src/google/protobuf/port_def.inc b/src/google/protobuf/port_def.inc
+index 1b6b41fb4..aebd47fb0 100644
+--- a/src/google/protobuf/port_def.inc
++++ b/src/google/protobuf/port_def.inc
+@@ -499,7 +499,8 @@ static_assert(PROTOBUF_ABSL_MIN(20230125, 3),
+ #error PROTOBUF_ATTRIBUTE_WEAK was previously defined
+ #endif
+ #if ABSL_HAVE_ATTRIBUTE(weak) && !defined(__APPLE__) && \
+-    (!defined(_WIN32) || __clang_major__ < 9) && !defined(__MINGW32__)
++    (!defined(_WIN32) || __clang_major__ < 9) && !defined(__MINGW32__) && \
++    !defined(__CYGWIN__)
+ #define PROTOBUF_ATTRIBUTE_WEAK __attribute__((weak))
+ #define PROTOBUF_HAVE_ATTRIBUTE_WEAK 1
+ #else
+diff --git a/src/google/protobuf/port_test.cc b/src/google/protobuf/port_test.cc
+index 1a6c8ad86..d8f16d297 100644
+--- a/src/google/protobuf/port_test.cc
++++ b/src/google/protobuf/port_test.cc
+@@ -12,9 +12,11 @@
+ 
+ #include <cassert>
+ #include <cstdint>  // NOLINT
++#include <string>
+ 
+ #include <gtest/gtest.h>
+ #include "absl/base/config.h"
++#include "google/protobuf/arenastring.h"
+ 
+ // Must be included last
+ #include "google/protobuf/port_def.inc"
+@@ -134,6 +136,35 @@ TEST(PortTest, PrefetchWorksWithValidOffsets) {
+ 
+ #endif  // defined(__clang__) && ABSL_HAVE_BUILTIN(__builtin_prefetch)
+ 
++// Verify PROTOBUF_ATTRIBUTE_WEAK is configured correctly per platform.
++// On Cygwin (PE/COFF), weak symbols collapse all definitions into one,
++// breaking per-type vtable dispatch. The macro must be disabled there.
++TEST(PortTest, WeakAttributePlatformConfiguration) {
++#if defined(__CYGWIN__)
++  // PROTOBUF_HAVE_ATTRIBUTE_WEAK gates weak symbol usage. On Cygwin
++  // it must be 0 because PE/COFF weak symbols have merge semantics
++  // that collapse distinct virtual function overrides into one.
++  EXPECT_EQ(PROTOBUF_HAVE_ATTRIBUTE_WEAK, 0)
++      << "Weak attributes must be disabled on Cygwin (PE/COFF)";
++#elif defined(__linux__)
++  // On Linux (ELF), weak symbols work correctly.
++  EXPECT_EQ(PROTOBUF_HAVE_ATTRIBUTE_WEAK, 1)
++      << "Weak attributes should be enabled on Linux (ELF)";
++#endif
++}
++
++// Verify ABI layout assumptions that affect wire format correctness.
++TEST(PortTest, CriticalTypeSizes) {
++  // ArenaStringPtr must be pointer-sized on all platforms.
++  EXPECT_EQ(sizeof(ArenaStringPtr), sizeof(void*));
++#ifdef __CYGWIN__
++  // Cygwin builds must use the SSO string ABI (CXX11_ABI=1).
++  // The COW ABI (sizeof=8) causes silent data corruption.
++  EXPECT_EQ(sizeof(std::string), 32u)
++      << "Cygwin build requires _GLIBCXX_USE_CXX11_ABI=1 (SSO strings)";
++#endif
++}
++
+ }  // namespace internal
+ }  // namespace protobuf
+ }  // namespace google
+diff --git a/src/google/protobuf/wire_format_unittest.cc b/src/google/protobuf/wire_format_unittest.cc
+index 2acfa84fe..e6ba8ff35 100644
+--- a/src/google/protobuf/wire_format_unittest.cc
++++ b/src/google/protobuf/wire_format_unittest.cc
+@@ -219,6 +219,41 @@ TEST(WireFormatTest, CppTypeForWorksForAllSupportedTypes) {
+ }
+ 
+ 
++// Verify that serialized protobuf data survives a binary file round-trip
++// without corruption. On platforms that default to text-mode I/O (Cygwin,
++// Windows), LF bytes (0x0a) in wire data can be silently expanded to
++// CR+LF (0x0d 0x0a) if files are opened without binary flags.
++TEST(WireFormatTest, BinaryFileRoundTripPreservesBytes) {
++  proto2_unittest::TestAllTypes msg;
++  msg.set_optional_int32(42);
++  // Field tag 14 (optional_string) is 0x72 = (14 << 3 | 2).
++  // The length prefix is 0x05. The content includes a literal LF.
++  msg.set_optional_string("AB\nCD");
++  // Bytes field with every problematic control character.
++  msg.set_optional_bytes(std::string("\x0a\x0d\x0d\x0a\x00\xff", 6));
++
++  std::string wire;
++  ASSERT_TRUE(msg.SerializeToString(&wire));
++
++  // Write to a temp file in binary mode, read back, compare.
++  std::string tmpfile = testing::TempDir() + "/wire_roundtrip.bin";
++  {
++    FILE* f = fopen(tmpfile.c_str(), "wb");
++    ASSERT_NE(f, nullptr) << "Failed to open temp file for writing";
++    ASSERT_EQ(fwrite(wire.data(), 1, wire.size(), f), wire.size());
++    fclose(f);
++  }
++  {
++    FILE* f = fopen(tmpfile.c_str(), "rb");
++    ASSERT_NE(f, nullptr) << "Failed to open temp file for reading";
++    std::string readback(wire.size(), '\0');
++    ASSERT_EQ(fread(&readback[0], 1, wire.size(), f), wire.size());
++    fclose(f);
++    EXPECT_EQ(readback, wire) << "Binary file round-trip corrupted wire data";
++  }
++  remove(tmpfile.c_str());
++}
++
+ }  // namespace
+ }  // namespace internal
+ }  // namespace protobuf
+diff --git a/upb/mini_table/generated_registry.c b/upb/mini_table/generated_registry.c
+index 3ed3f9c7c..cab8707b8 100644
+--- a/upb/mini_table/generated_registry.c
++++ b/upb/mini_table/generated_registry.c
+@@ -59,8 +59,9 @@ static bool _upb_GeneratedRegistry_AddAllLinkedExtensions(
+         continue;
+       }
+ 
+-      if (upb_ExtensionRegistry_Add(r, ext) !=
+-          kUpb_ExtensionRegistryStatus_Ok) {
++      upb_ExtensionRegistryStatus status = upb_ExtensionRegistry_Add(r, ext);
++      if (status != kUpb_ExtensionRegistryStatus_Ok &&
++          status != kUpb_ExtensionRegistryStatus_DuplicateEntry) {
+         return false;
+       }
+       current += sizeof(upb_MiniTableExtension);
+diff --git a/upb/port/def.inc b/upb/port/def.inc
+index c35ccea38..c325eb6fc 100644
+--- a/upb/port/def.inc
++++ b/upb/port/def.inc
+@@ -371,7 +371,13 @@ Error, UINTPTR_MAX is undefined
+ // Android uses a custom libc that does not implement all of posix, but it has
+ // had sigsetjmp/siglongjmp forever on arm and since API 12 on x86. Apple has
+ // sigsetjmp, but does not define the posix feature test macro.
+-#if defined(__APPLE__) || defined(_POSIX_C_SOURCE) || defined(__ANDROID__)
++#if defined(__CYGWIN__)
++// Cygwin's sigjmp_buf is larger than jmp_buf (34 vs 32 longs).  UPB stores
++// jmp_buf in structs (upb_ErrorHandler, upb_MdDecoder) but the sigsetjmp path
++// writes sigjmp_buf-sized data, overflowing the buffer.  Use plain setjmp.
++#define UPB_SETJMP(buf) setjmp(buf)
++#define UPB_LONGJMP(buf, val) longjmp(buf, val)
++#elif defined(__APPLE__) || defined(_POSIX_C_SOURCE) || defined(__ANDROID__)
+ // avoid setting/restoring signal mask, which involves costly syscalls
+ #define UPB_SETJMP(buf) sigsetjmp(buf, 0)
+ #define UPB_LONGJMP(buf, val) siglongjmp(buf, val)
+@@ -566,7 +572,24 @@ Error, UINTPTR_MAX is undefined
+ 
+ #define UPB_LINKARR_SENTINEL UPB_RETAIN __attribute__((weak, used))
+ 
+-#if defined(__ELF__) || defined(__wasm__)
++#if defined(__CYGWIN__)
++
++// Cygwin uses GNU ld targeting PE/COFF.  The __start_/__stop_ section symbols
++// work the same as on ELF.  PE/COFF weak semantics differ from ELF (all
++// definitions are merged into one) but this is correct for the sentinel since
++// every instance is an identical zero-initialized array.
++#define UPB_LINKARR_APPEND(name) \
++  __attribute__((                \
++      section("linkarr_" #name))) UPB_LINKARR_ATTR UPB_NO_SANITIZE_ADDRESS
++#define UPB_LINKARR_DECLARE(name, type) \
++  extern type __start_linkarr_##name;   \
++  extern type __stop_linkarr_##name;    \
++  UPB_LINKARR_APPEND(name)              \
++  UPB_LINKARR_SENTINEL type UPB_linkarr_internal_empty_##name[1]
++#define UPB_LINKARR_START(name) (&__start_linkarr_##name)
++#define UPB_LINKARR_STOP(name) (&__stop_linkarr_##name)
++
++#elif defined(__ELF__) || defined(__wasm__)
+ 
+ #define UPB_LINKARR_APPEND(name) \
+   __attribute__((                \
+@@ -646,7 +669,19 @@ Error, UINTPTR_MAX is undefined
+ #define _UPB_CONSTRUCTOR_PLACEHOLDER(unique_name)
+ #endif
+ 
+-#if defined(__ELF__) || defined(__wasm__) || defined(__MACH__)
++#if defined(__CYGWIN__)
++// Cygwin PE/COFF: weak + constructor silently strips the constructor
++// attribute, so each TU needs a unique constructor name.  On ELF the weak
++// constructor runs once; here all run but only the first registers (the
++// generated code's `static bool finished` guard makes this safe — each
++// TU's function is static so it has its own guard, but the global
++// upb_generated_extension_list becomes non-NULL after the first, so only
++// one entry is added to the list per unique `finished` instance; the
++// duplicate entries all point to the same section range and the registry
++// handles duplicate extensions by returning Ok for already-registered ones).
++#define UPB_CONSTRUCTOR(name, unique_name)                                   \
++  __attribute__((constructor)) void UPB_PRIVATE(unique_name)(void)
++#elif defined(__ELF__) || defined(__wasm__) || defined(__MACH__)
+ #define UPB_CONSTRUCTOR(name, unique_name)                                   \
+   _UPB_CONSTRUCTOR_PLACEHOLDER(unique_name)                                  \
+   __attribute__((weak, visibility("hidden"), constructor)) void UPB_PRIVATE( \

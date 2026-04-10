@@ -1,0 +1,58 @@
+protobuf — Protocol Buffers (Cygwin port)
+
+Upstream: https://github.com/protocolbuffers/protobuf
+Version:  34.1 (C++ 7.34.1)
+License:  BSD-3-Clause
+
+Patch summary (12 files):
+
+  src/google/protobuf/port_def.inc
+      Disable PROTOBUF_ATTRIBUTE_WEAK on Cygwin. PE/COFF weak symbols
+      collapse vtable dispatch, breaking descriptor self-registration.
+
+  src/google/protobuf/compiler/plugin.cc
+      Set binary mode on plugin stdin/stdout to prevent CRLF corruption
+      of wire-format data.
+
+  src/google/protobuf/compiler/command_line_interface_tester.cc
+  src/google/protobuf/compiler/command_line_interface_unittest.cc
+      Remove stale #if !defined(__CYGWIN__) guards left from a prior
+      port attempt.
+
+  upb/port/def.inc
+      PE/COFF linker array and constructor macros for UPB mini-table
+      registration. ELF uses __attribute__((section)), PE/COFF uses
+      #pragma section with __declspec(allocate).
+
+  upb/mini_table/generated_registry.c
+      Use PE/COFF linker arrays for mini-table registration on Cygwin.
+
+  src/google/protobuf/port_test.cc
+  src/google/protobuf/descriptor_unittest.cc
+  src/google/protobuf/wire_format_unittest.cc
+  src/google/protobuf/compiler/code_generator_unittest.cc
+      Platform regression tests for weak symbol, plugin binary mode,
+      and descriptor registration fixes.
+
+  src/google/protobuf/BUILD.bazel
+      Add :protobuf_lite dep to port_test (needed for arenastring.h).
+
+  src/README.md
+      Cygwin build instructions.
+
+Build notes:
+
+  Requires abseil-cpp built with the same ABI flags:
+    _GLIBCXX_USE_CXX11_ABI=1    (SSO string ABI)
+    GTEST_HAS_PTHREAD=1          (GoogleTest pthread support)
+
+  abseil-cpp must be installed at /usr/local before building protobuf.
+  Use the phdye-cygwin abseil-cpp cygport or binary release.
+
+Known limitations:
+
+  Death tests fail due to Cygwin's fork() implementation. The full-test
+  binary (monolithic test runner) aborts when a death test fork leaves
+  stale temp directories. All non-death tests pass (745 tests).
+
+Source: https://github.com/phdye-cygwin/protobuf, branch cygwin/v34.1
