@@ -1,0 +1,107 @@
+psutil — Cross-platform process and system utilities (Cygwin port)
+
+Upstream: https://github.com/giampaolo/psutil
+Version:  7.1.0
+License:  BSD-3-Clause
+
+Patch summary (47 files):
+
+  Platform implementation (new):
+    psutil/_pscygwin.py
+        Cygwin platform module (Python wrapper over _psutil_cygwin).
+        Imports _psutil_cygwin as cext, defines Cygwin-specific named
+        tuples, implements process and system APIs using /proc and
+        selective Win32 calls via iphlpapi.dll.
+
+    psutil/_psutil_cygwin.c
+        C extension entry point. Unlike other POSIX platforms, Cygwin
+        does NOT build a separate _psutil_posix extension — POSIX
+        functionality is included directly in this extension for
+        isolation.
+
+    psutil/arch/cygwin/*.c, *.h
+        Subsystem implementation files (cpu, disk, io, mem, net,
+        net_connections, proc, system) plus win32.c for selective
+        Windows API calls and win32_apis.c for Win32→Python exception
+        translation (ERROR_ACCESS_DENIED → PermissionError → AccessDenied).
+
+    psutil/arch/cygwin/posix/*.h, posix_compat.h, posix_wrappers/*.c
+        POSIX header shims and wrapper files that bridge Cygwin's
+        POSIX layer to the places where upstream psutil expects
+        Linux-style /proc semantics.
+
+  Cross-platform dispatch (modified):
+    psutil/__init__.py
+        Add Cygwin platform detection and module dispatch.
+
+    psutil/_common.py
+        Add CYGWIN constant for platform checks.
+
+    psutil/arch/all/init.h
+        Shared C init header update for the Cygwin build.
+
+  Build system:
+    setup.py
+        Cygwin detection via sys.platform and PATH. Adds PSUTIL_CYGWIN
+        macro, -std=gnu99, and the arch/cygwin/ source list. Unlike
+        other POSIX platforms, Cygwin does NOT build the separate
+        _psutil_posix extension.
+
+    Makefile
+        Cygwin platform detection for the test-platform target.
+
+    .gitattributes, .gitignore
+        Line ending normalization and build-artifact ignores.
+
+  Scripts:
+    scripts/disk_usage.py   Handle PermissionError on inaccessible drives
+    scripts/procsmem.py     Add Cygwin to supported platform check
+
+  Regression tests (9 files):
+    psutil/tests/__init__.py              2x GLOBAL_TIMEOUT; PYTHONPATH for subprocs
+    psutil/tests/test_cygwin.py           New Cygwin-specific test file
+    psutil/tests/test_connections.py      Skip UNIX socket enumeration
+    psutil/tests/test_contracts.py        Cygwin contract branches
+    psutil/tests/test_process.py          Cygwin process-test branches
+    psutil/tests/test_process_all.py      ionice validation (Linux convention)
+    psutil/tests/test_system.py           Cygwin system-test branches
+    psutil/tests/test_testutils.py        Skip UNIX socketpair
+    psutil/tests/test_unicode.py          Skip UNIX socket enumeration
+
+Build notes:
+
+  The C extension is built with -std=gnu99 and the PSUTIL_CYGWIN macro.
+  Unlike other POSIX platforms, no separate _psutil_posix extension is
+  built — POSIX functionality is included directly in _psutil_cygwin
+  for isolation from the Cygwin-specific subsystem code.
+
+  The port is a hybrid: POSIX APIs consistently for sockets and process
+  enumeration (via /proc), selective Windows APIs (iphlpapi, psapi) for
+  network connections and Windows-accurate memory metrics where
+  /proc/<pid>/status doesn't match Windows counters.
+
+Known limitations:
+
+  UNIX socket enumeration:
+    Cygwin's /proc/net/unix does not expose UNIX-domain sockets, so
+    net_connections(kind='unix') returns empty. Affected upstream tests
+    are skipped on Cygwin.
+
+  Process iteration is slower than Linux:
+    Each /proc/<pid>/stat read crosses the Cygwin POSIX/Win32 boundary.
+    GLOBAL_TIMEOUT is doubled on Cygwin in the test infrastructure.
+
+  DLL rebase after build:
+    The Cygwin extension DLL must sometimes be rebased after build to
+    avoid fork() address space collisions. Run 'rebaseall' if fork
+    failures appear in the test suite.
+
+Runtime dependency chain:
+
+    psutil <- pypinfo <- grpcio <- protobuf <- abseil-cpp
+
+psutil sits at the root of the phdye-cygwin Python dependency chain —
+pypinfo depends on it; grpcio depends on pypinfo transitively via the
+Cygwin port effort.
+
+Source: https://github.com/phdye-cygwin/psutil, branch cygwin/v7.1.0

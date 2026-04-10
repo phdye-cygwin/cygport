@@ -1,0 +1,16 @@
+# Cygport build artifacts. Each package directory may contain:
+#   <package>-<version>-<release>.<arch>/   build workdir
+#   <package>-<version>.tar.gz              downloaded upstream tarball
+#   <package>-<version>-<release>.src/      source package staging
+#   <package>-<version>-<release>.src.hint
+#   dist/                                   produced cygwin packages
+*/*-*-*.x86_64/
+*/*-*-*.i686/
+*/*-*-*.src/
+*/*-*-*.src.hint
+*/*-*-*-x86_64.tar.xz
+*/*-*-*-src.tar.xz
+*/*.tar.gz
+*/*.tar.bz2
+*/*.tar.xz
+*/dist/

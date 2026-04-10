@@ -1,0 +1,53 @@
+HOMEPAGE="https://github.com/giampaolo/psutil"
+# SRC_URI is set by `inherit python3-wheel` to the PyPI source tarball
+# (files.pythonhosted.org/packages/source/p/psutil/psutil-${PV}.tar.gz),
+# which unpacks to psutil-${PV}/ matching cygport's default SRC_DIR.
+PATCH_URI="${PF}.src.patch"
+
+CATEGORY="Python"
+SUMMARY="Cross-platform library for process and system utilities"
+DESCRIPTION="psutil (process and system utilities) is a cross-platform
+library for retrieving information on running processes and system
+utilization (CPU, memory, disks, network, sensors) in Python. This
+Cygwin port adds a complete Cygwin platform implementation in
+psutil/arch/cygwin/ alongside the existing Linux, Windows, macOS, BSD,
+Solaris, and AIX platforms."
+
+LICENSE="BSD-3-Clause"
+LICENSE_SPDX="SPDX-License-Identifier: BSD-3-Clause"
+LICENSE_URI="LICENSE"
+
+BUILD_REQUIRES="
+	gcc-core
+	python3-devel
+	python3-pip
+	python3-setuptools
+	python3-wheel
+"
+
+inherit python3-wheel
+
+src_compile() {
+	lndirs
+	cd ${B}
+	python3_wheel_compile
+}
+
+src_test() {
+	# Install the freshly built wheel into a temp prefix so the
+	# compiled _psutil_cygwin extension is visible, then import-test.
+	# The build tree contains the Python sources but not the compiled
+	# extension (which lives inside the wheel). We also have to cd out
+	# of ${B} so Python does not import the in-tree psutil/ via CWD.
+	local testdir=${WORKDIR}/test-install
+	rm -rf ${testdir}
+	python3 -m pip install --target ${testdir} --no-deps --force-reinstall ${B}/dist/psutil-*.whl
+	cd ${testdir}
+	PYTHONPATH=${testdir} python3 -c "import psutil; assert psutil.CYGWIN; print('psutil', psutil.__version__, 'CYGWIN=True')"
+	PYTHONPATH=${testdir} python3 -c "import psutil; p = psutil.Process(); print('pid', p.pid, 'name', p.name(), 'status', p.status())"
+}
+
+src_install() {
+	cd ${B}
+	python3_wheel_install
+}
