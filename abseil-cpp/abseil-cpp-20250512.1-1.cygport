@@ -1,0 +1,49 @@
+HOMEPAGE="https://github.com/abseil/abseil-cpp"
+SRC_URI="https://github.com/abseil/abseil-cpp/archive/refs/tags/${PV}.tar.gz"
+PATCH_URI="${PF}.src.patch"
+
+CATEGORY="Libs"
+SUMMARY="C++ Common Libraries"
+DESCRIPTION="Abseil is an open-source collection of C++ library code designed
+to augment the C++ standard library. The Abseil library code is collected from
+Google's own C++ code base, has been extensively tested and used in production."
+
+LICENSE="Apache-2.0"
+LICENSE_SPDX="SPDX-License-Identifier: Apache-2.0"
+LICENSE_URI="LICENSE"
+
+# No libgtest-devel in Cygwin; GoogleTest is fetched at configure time via
+# ABSL_USE_GOOGLETEST_HEAD.
+
+# Cygwin libstdc++ defaults to COW string ABI (sizeof=8). Abseil and its
+# consumers (protobuf, grpc) require the SSO ABI (sizeof=32). GTEST_HAS_PTHREAD
+# is needed because GoogleTest omits Cygwin from its pthread platform list.
+export CXXFLAGS="${CXXFLAGS} -D_GLIBCXX_USE_CXX11_ABI=1 -DGTEST_HAS_PTHREAD=1"
+
+inherit cmake
+
+CYGCMAKE_ARGS="
+	-DCMAKE_CXX_STANDARD:STRING=17
+	-DABSL_BUILD_TESTING:BOOL=ON
+	-DABSL_USE_GOOGLETEST_HEAD:BOOL=ON
+"
+
+# flags_sequence_lock_test (~225s) and mutex_test (~103s) are slow by design.
+src_test() {
+	cd ${B}
+	ctest --output-on-failure --timeout 300
+}
+
+PKG_NAMES="
+	abseil-cpp
+	libabseil-devel
+"
+abseil_cpp_CONTENTS="
+	usr/share
+"
+libabseil_devel_CONTENTS="
+	usr/include
+	usr/lib
+"
+abseil_cpp_SUMMARY="${SUMMARY} (licensing & readmes)"
+libabseil_devel_SUMMARY="${SUMMARY} (development)"

@@ -1,0 +1,39 @@
+abseil-cpp — C++ Common Libraries (Cygwin port)
+
+Upstream: https://github.com/abseil/abseil-cpp
+Version:  20250512.1
+License:  Apache-2.0
+
+Patch summary (11 files):
+
+  absl/base/policy_checks.h         Remove #error "Cygwin is not supported"
+  absl/base/attributes.h            Disable weak symbols (PE/COFF lacks support)
+  absl/base/config.h                Enable ABSL_HAVE_MMAP on Cygwin
+  absl/base/internal/low_level_alloc.h  Correct mmap allocation capability flags
+  absl/base/internal/sysinfo.cc     Fix GetTID cast (pthread_t is pointer-sized)
+  absl/base/internal/sysinfo.h      Widen pid_t to uintptr_t for thread handles
+  absl/log/internal/config.h        Widen Tid to uint64_t to prevent truncation
+  absl/base/internal/raw_logging.cc Enable POSIX write() for raw log output
+  absl/strings/charconv_test.cc     Test: accommodate Cygwin strtod() NaN behavior
+  absl/log/stripping_test.cc        Test: enable /proc/self/exe path on Cygwin
+  absl/strings/internal/str_format/convert_test.cc
+                                    Test: fix Esc(wchar_t) crash under _FORTIFY_SOURCE
+
+Build notes:
+
+  _GLIBCXX_USE_CXX11_ABI=1 is mandatory. Cygwin libstdc++ defaults to the
+  COW string ABI; abseil and its consumers (protobuf, grpc) require SSO.
+
+  GTEST_HAS_PTHREAD=1 is needed because GoogleTest omits Cygwin from its
+  pthread platform list. Without it, gmock Mutex layout mismatches crash
+  any gmock-based test.
+
+  GoogleTest is fetched at build time (ABSL_USE_GOOGLETEST_HEAD) because
+  Cygwin does not ship a libgtest-devel package.
+
+Known limitations:
+
+  Death tests fail due to Cygwin's fork() implementation. 10 test binaries
+  are affected. All 218 non-death tests pass.
+
+Upstream PR: https://github.com/abseil/abseil-cpp/pull/2012

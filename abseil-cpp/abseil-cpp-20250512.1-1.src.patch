@@ -1,0 +1,176 @@
+diff --git a/absl/base/attributes.h b/absl/base/attributes.h
+index d009f6d4..7f742679 100644
+--- a/absl/base/attributes.h
++++ b/absl/base/attributes.h
+@@ -143,7 +143,7 @@
+     (!defined(_WIN32) ||                                          \
+      (defined(__clang__) && __clang_major__ >= 9 &&               \
+       !defined(ABSL_BUILD_DLL) && !defined(ABSL_CONSUME_DLL))) && \
+-    !defined(__MINGW32__)
++    !defined(__MINGW32__) && !defined(__CYGWIN__)
+ #undef ABSL_ATTRIBUTE_WEAK
+ #define ABSL_ATTRIBUTE_WEAK __attribute__((weak))
+ #define ABSL_HAVE_ATTRIBUTE_WEAK 1
+diff --git a/absl/base/config.h b/absl/base/config.h
+index 1a9bc591..4a22e48d 100644
+--- a/absl/base/config.h
++++ b/absl/base/config.h
+@@ -377,7 +377,8 @@ static_assert(ABSL_INTERNAL_INLINE_NAMESPACE_STR[0] != 'h' ||
+     defined(__asmjs__) || defined(__EMSCRIPTEN__) || defined(__Fuchsia__) || \
+     defined(__sun) || defined(__myriad2__) || defined(__HAIKU__) ||          \
+     defined(__OpenBSD__) || defined(__NetBSD__) || defined(__QNX__) ||       \
+-    defined(__VXWORKS__) || defined(__hexagon__) || defined(__XTENSA__)
++    defined(__VXWORKS__) || defined(__hexagon__) || defined(__XTENSA__) || \
++    defined(__CYGWIN__)
+ #define ABSL_HAVE_MMAP 1
+ #endif
+ 
+diff --git a/absl/base/internal/low_level_alloc.h b/absl/base/internal/low_level_alloc.h
+index c2f1f25d..6fdd82b0 100644
+--- a/absl/base/internal/low_level_alloc.h
++++ b/absl/base/internal/low_level_alloc.h
+@@ -36,7 +36,7 @@
+ // LowLevelAlloc.
+ #ifdef ABSL_LOW_LEVEL_ALLOC_MISSING
+ #error ABSL_LOW_LEVEL_ALLOC_MISSING cannot be directly set
+-#elif !defined(ABSL_HAVE_MMAP) && !defined(_WIN32)
++#elif !defined(ABSL_HAVE_MMAP) && !defined(_WIN32) && !defined(__CYGWIN__)
+ #define ABSL_LOW_LEVEL_ALLOC_MISSING 1
+ #endif
+ 
+@@ -47,7 +47,7 @@
+ #ifdef ABSL_LOW_LEVEL_ALLOC_ASYNC_SIGNAL_SAFE_MISSING
+ #error ABSL_LOW_LEVEL_ALLOC_ASYNC_SIGNAL_SAFE_MISSING cannot be directly set
+ #elif defined(_WIN32) || defined(__asmjs__) || defined(__wasm__) || \
+-    defined(__hexagon__)
++    defined(__hexagon__) || defined(__CYGWIN__)
+ #define ABSL_LOW_LEVEL_ALLOC_ASYNC_SIGNAL_SAFE_MISSING 1
+ #endif
+ 
+diff --git a/absl/base/internal/raw_logging.cc b/absl/base/internal/raw_logging.cc
+index 35a08f0a..7d8e96bd 100644
+--- a/absl/base/internal/raw_logging.cc
++++ b/absl/base/internal/raw_logging.cc
+@@ -44,7 +44,8 @@
+ #if defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || \
+     defined(__hexagon__) || defined(__Fuchsia__) ||                     \
+     defined(__native_client__) || defined(__OpenBSD__) ||               \
+-    defined(__EMSCRIPTEN__) || defined(__ASYLO__)
++    defined(__EMSCRIPTEN__) || defined(__ASYLO__) ||                    \
++    defined(__CYGWIN__)
+ 
+ #include <unistd.h>
+ 
+diff --git a/absl/base/internal/sysinfo.cc b/absl/base/internal/sysinfo.cc
+index 1937db30..046ac3d4 100644
+--- a/absl/base/internal/sysinfo.cc
++++ b/absl/base/internal/sysinfo.cc
+@@ -481,7 +481,7 @@ pid_t GetTID() {
+ pid_t GetTID() {
+   // `pthread_t` need not be arithmetic per POSIX; platforms where it isn't
+   // should be handled above.
+-  return static_cast<pid_t>(pthread_self());
++  return reinterpret_cast<pid_t>(pthread_self());
+ }
+ 
+ #endif
+diff --git a/absl/base/internal/sysinfo.h b/absl/base/internal/sysinfo.h
+index 119cf1f0..fb1de3bf 100644
+--- a/absl/base/internal/sysinfo.h
++++ b/absl/base/internal/sysinfo.h
+@@ -57,6 +57,9 @@ int NumCPUs();
+ // return types of GetProcessId() and GetThreadId() are both DWORD, an unsigned
+ // 32-bit type.
+ using pid_t = uint32_t;
++#elif defined(__CYGWIN__)
++// On CYGWIN, this works on both i686 (deprecated) and x64 targets.
++using pid_t = uintptr_t;
+ #endif
+ pid_t GetTID();
+ 
+diff --git a/absl/base/policy_checks.h b/absl/base/policy_checks.h
+index f84944cf..6a74841d 100644
+--- a/absl/base/policy_checks.h
++++ b/absl/base/policy_checks.h
+@@ -38,10 +38,6 @@
+ // Operating System Check
+ // -----------------------------------------------------------------------------
+ 
+-#if defined(__CYGWIN__)
+-#error "Cygwin is not supported."
+-#endif
+-
+ // -----------------------------------------------------------------------------
+ // Toolchain Check
+ // -----------------------------------------------------------------------------
+diff --git a/absl/log/internal/config.h b/absl/log/internal/config.h
+index 379e9ab9..b8c05162 100644
+--- a/absl/log/internal/config.h
++++ b/absl/log/internal/config.h
+@@ -34,6 +34,11 @@ namespace log_internal {
+ 
+ #ifdef _WIN32
+ using Tid = uint32_t;
++#elif defined(__CYGWIN__)
++// Cygwin's GetTID() returns reinterpret_cast<uintptr_t>(pthread_self()),
++// which is an 8-byte pointer on x86_64. System pid_t is int (4 bytes)
++// and would truncate the thread ID, causing collisions in log output.
++using Tid = uint64_t;
+ #else
+ using Tid = pid_t;
+ #endif
+diff --git a/absl/log/stripping_test.cc b/absl/log/stripping_test.cc
+index 271fae1d..83a6f430 100644
+--- a/absl/log/stripping_test.cc
++++ b/absl/log/stripping_test.cc
+@@ -170,7 +170,7 @@ class StrippingTest : public ::testing::Test {
+   // Opens this program's executable file.  Returns `nullptr` and writes to
+   // `stderr` on failure.
+   std::unique_ptr<FILE, std::function<void(FILE*)>> OpenTestExecutable() {
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__CYGWIN__)
+     std::unique_ptr<FILE, std::function<void(FILE*)>> fp(
+         fopen("/proc/self/exe", "rb"), [](FILE* fp) { fclose(fp); });
+     if (!fp) {
+diff --git a/absl/strings/charconv_test.cc b/absl/strings/charconv_test.cc
+index c16c735c..37296659 100644
+--- a/absl/strings/charconv_test.cc
++++ b/absl/strings/charconv_test.cc
+@@ -31,6 +31,13 @@
+ #ifdef _MSC_FULL_VER
+ #define ABSL_COMPILER_DOES_EXACT_ROUNDING 0
+ #define ABSL_STRTOD_HANDLES_NAN_CORRECTLY 0
++#elif defined(__CYGWIN__)
++#define ABSL_COMPILER_DOES_EXACT_ROUNDING 1
++// Cygwin's strtod() handles NaN payloads differently for large or
++// non-numeric n-char-sequences (e.g., "abc123", very long digit strings).
++// The NaN payload encoding is unspecified per IEEE 754, so this is a
++// platform difference, not a bug.
++#define ABSL_STRTOD_HANDLES_NAN_CORRECTLY 0
+ #else
+ #define ABSL_COMPILER_DOES_EXACT_ROUNDING 1
+ #define ABSL_STRTOD_HANDLES_NAN_CORRECTLY 1
+diff --git a/absl/strings/internal/str_format/convert_test.cc b/absl/strings/internal/str_format/convert_test.cc
+index e4fa44eb..1c029238 100644
+--- a/absl/strings/internal/str_format/convert_test.cc
++++ b/absl/strings/internal/str_format/convert_test.cc
+@@ -151,12 +151,13 @@ std::string Esc(unsigned char v) { return EscCharImpl(v); }
+ 
+ std::string Esc(wchar_t v) {
+   char buf[64];
+-  int n = std::iswprint(static_cast<wint_t>(v))
+-              ? snprintf(buf, sizeof(buf), "L'%lc'", static_cast<wint_t>(v))
+-              : snprintf(buf, sizeof(buf), "L'\\x%.*llx'",
+-                         static_cast<int>(sizeof(wchar_t) * CHAR_BIT / 4),
+-                         static_cast<unsigned long long>(
+-                             static_cast<std::make_unsigned_t<wchar_t>>(v)));
++  // Cygwin's snprintf returns -1 for %lc with non-representable wide chars
++  // in the C locale, even when iswprint() reports them as printable.
++  // Always use the hex representation to avoid this platform divergence.
++  int n = snprintf(buf, sizeof(buf), "L'\\x%.*llx'",
++                   static_cast<int>(sizeof(wchar_t) * CHAR_BIT / 4),
++                   static_cast<unsigned long long>(
++                       static_cast<std::make_unsigned_t<wchar_t>>(v)));
+   assert(n > 0 && static_cast<size_t>(n) < sizeof(buf));
+   return std::string(buf, static_cast<size_t>(n));
+ }
